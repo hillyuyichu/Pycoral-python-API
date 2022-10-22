@@ -39,14 +39,16 @@ class Classify(object):
         while True:
             try:  # Timeout raises queue.Empty
 
-                imagee = self.file_queue.get(block=True, timeout=0.1)
-                logger.info("imagee            got passed into classify worker: %s:" % (imagee))
+                image = self.file_queue.get(block=True, timeout=0.1)
+
             except Empty:
                 if self.quit_event.is_set():
                     logger.info("Quitting thread...")
                     break
 
             else:
+                
+
                 library = self.library
                 active = self.active
                 database = self.database
@@ -60,7 +62,7 @@ class Classify(object):
                         # Ensure classifer is in database
                         try:
                             storage = database[name]
-                            logger.info(' %s is inside storage', storage)
+                            logger.info(' xxx %s is inside storage', storage)
                         except KeyError:
                             storage = {}
 
@@ -68,13 +70,13 @@ class Classify(object):
                         interpreter = self.loaded[name]["model"]
                         labels = self.loaded[name]["labels"]
                         thresholds = self.loaded[name]["thresholds"]
-                        logger.info(' %s is inside ["model"]', self.loaded[name]["model"])   
+                        logger.info(' xxx %s is inside ["model"]', self.loaded[name]["model"])   
                                             
                         interpreter.allocate_tensors()
                         
                         size = common.input_size(interpreter)
-                        image = Image.open(imagee).convert('RGB').resize(size, Image.Resampling.LANCZOS)
-                          
+                        image = Image.open(image).convert('RGB').resize(size, Image.ANTIALIAS)
+                        
                         params = common.input_details(interpreter, 'quantization_parameters')
                         scale = params['scales']
                         zero_point = params['zero_points']
@@ -93,7 +95,7 @@ class Classify(object):
                             results = classify.get_classes(
                                 interpreter, top_k=3, score_threshold=0
                             )  # Return top 3 probability items
-                            #logger.info("%s results: " % (results))
+                            logger.info("%s results: " % (results))
                         except OSError:
                             logger.info("OSError detected, retrying")
                             break
@@ -101,11 +103,10 @@ class Classify(object):
                         # Create dictionary including those not in top_k
                         big_dict = {}
                         for result in results:
-                            label = labels[result[0]]     #labels.get(result.id, result.id)   
+                            label = labels[result[0]]
                             confidence = round(result[1].item(), 2)
                             big_dict[label] = confidence
-                        logger.info("pycoral: %s, %0.2f " % (labels.get(result.id,result.id),result.score))
-                        logger.info("old_edgetpu: %s , %0.2f " % (labels[result[0]], result[1].item()))
+                        logger.info("%s: %.5f " % (labels.get(result.id,result.id), result.score))
                         not_in_top_k = big_dict.keys() ^ labels.values()
                         for label in not_in_top_k:
                             # Zero confidence ensures moving average keeps moving
