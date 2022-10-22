@@ -1,9 +1,11 @@
-from edgetpu.classification.engine import ClassificationEngine
-from edgetpu.utils import dataset_utils
+from pycoral.utils import edgetpu
+from pycoral.utils import dataset
+from pycoral.adapters import common
+from pycoral.adapters import classify
 from PIL import Image
 from threading import Thread, Event
 from queue import Queue, Empty
-
+import numpy as np
 from config import Classifiers
 from json import dumps
 from collections import deque
@@ -32,7 +34,7 @@ class Classify(object):
 
     def _worker(self):
 
-        logger.debug("Initialising classification worker")
+        logger.info("Initialising classification worker")
 
         while True:
             try:  # Timeout raises queue.Empty
@@ -41,11 +43,11 @@ class Classify(object):
 
             except Empty:
                 if self.quit_event.is_set():
-                    logger.debug("Quitting thread...")
+                    logger.info("Quitting thread...")
                     break
 
             else:
-                image = Image.open(image)
+                
 
                 library = self.library
                 active = self.active
@@ -60,22 +62,40 @@ class Classify(object):
                         # Ensure classifer is in database
                         try:
                             storage = database[name]
+                            logger.info(' xxx %s is inside storage', storage)
                         except KeyError:
                             storage = {}
 
                         # Load classifier information
-                        engine = self.loaded[name]["model"]
+                        interpreter = self.loaded[name]["model"]
                         labels = self.loaded[name]["labels"]
                         thresholds = self.loaded[name]["thresholds"]
-                                                                               # classification 9539 <tflite_runtime.interpreter.Interpreter object at 0xaeb29340> is inside engine
+                        logger.info(' xxx %s is inside ["model"]', self.loaded[name]["model"])   
+                                            
+                        interpreter.allocate_tensors()
+                        
+                        size = common.input_size(interpreter)
+                        image = Image.open(image).convert('RGB').resize(size, Image.ANTIALIAS)
+                        
+                        params = common.input_details(interpreter, 'quantization_parameters')
+                        scale = params['scales']
+                        zero_point = params['zero_points']
+                        mean = 128 
+                        std = 128  
+                        
+                        normalized_input = (np.asarray(image) - mean) / (std * scale) + zero_point
+                        np.clip(normalized_input, 0, 255, out=normalized_input)
+                        common.set_input(interpreter, normalized_input.astype(np.uint8))
+                        
+                        #common.set_input(engine, image)
+                        interpreter.invoke()
                         # Run inference
-                        logger.debug("Starting classifier %s " % (name))
-
+                        logger.info("Starting classifier %s " % (name))
                         try:
-                            results = engine.classify_with_image(
-                                image, top_k=3, threshold=0
+                            results = classify.get_classes(
+                                interpreter, top_k=3, score_threshold=0
                             )  # Return top 3 probability items
-                            logger.debug("%s results: " % (results))
+                            logger.info("%s results: " % (results))
                         except OSError:
                             logger.info("OSError detected, retrying")
                             break
@@ -86,7 +106,7 @@ class Classify(object):
                             label = labels[result[0]]
                             confidence = round(result[1].item(), 2)
                             big_dict[label] = confidence
-
+                        logger.info("%s: %.5f " % (labels.get(result.id,result.id), result.score))
                         not_in_top_k = big_dict.keys() ^ labels.values()
                         for label in not_in_top_k:
                             # Zero confidence ensures moving average keeps moving
@@ -132,15 +152,18 @@ class Classify(object):
 
             # Check if classifier has already been loaded
             if name not in self.loaded:
-                logger.debug("Loading classifier %s " % (name))
+                logger.info("Loading classifier %s " % (name))
 
                 # Read attributes from library and initialise
                 try:
                     attr = self.library[name]
                     output = {}
-                    output["labels"] = dataset_utils.read_label_file(attr["labels"])
-                    output["model"] = ClassificationEngine(attr["model"])                # make_intepreter()
+                    output["labels"] = dataset.read_label_file(attr["labels"])
+                    logger.info("load_classifiers:%s", attr["labels"])
+                    output["model"] = edgetpu.make_interpreter(attr["model"], device='usb:0')
+                    logger.info("load_classifiers: %s", attr["model"])
                     output["thresholds"] = attr["thresholds"]
+                    logger.info("load_classifiers:%s",attr["thresholds"])
                     self.loaded[name] = output
                 except KeyError:
                     raise KeyError("Classifier name not found in database")
